@@ -1,118 +1,339 @@
-import Image from 'next/image'
-import { Inter } from 'next/font/google'
+import { BASE_API_V1 } from '@/constant/Constant';
+import { Combobox, Listbox, Transition } from '@headlessui/react';
+import fetch from 'node-fetch';
+import { Fragment, useEffect, useState } from 'react';
+import { CheckIcon, ChevronUpDownIcon } from '@heroicons/react/20/solid';
+import * as crypto from 'crypto';
 
-const inter = Inter({ subsets: ['latin'] })
+const clientID = 'cScN6UqYRZKRnX2aG5WSEA';
+const secretKey = '19FP+vqZfiBhdtQfS2uALw==';
+const signatureKey = '3wJjZwA7c2AkMpNuuirvpIsxImBaDDACyizbzL5YtZY=';
 
 export default function Home() {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [method, setMethod] = useState('');
+  const [methodData, setMethodData] = useState([]);
+  const [methodPayment, setMethodPayment] = useState({
+    name: '',
+    code: '',
+    type: '',
+  });
+  const [isData, setIsData] = useState(false);
+  const [expired, setExpired] = useState('');
+  const [amount, setAmount] = useState('');
+  const [result, setResult] = useState(null);
+  const [phone, setPhone] = useState('');
+  const [accountNumber, setAccountNumber] = useState('');
+
+  const reqApi = async (
+    method: string,
+    url: string,
+    body?: string,
+    sig?: string,
+    endpoint?: string,
+    timestamp?: number
+  ) => {
+    const headers: any = {
+      'Content-Type': 'application/json',
+      Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString(
+        'base64'
+      )}`,
+    };
+
+    if (sig) {
+      headers['X-SIGNATURE'] = sig;
+    }
+    if (method) {
+      headers['X-METHOD'] = method;
+    }
+    if (timestamp) {
+      headers['X-TIMESTAMP'] = timestamp;
+    }
+    if (endpoint) {
+      headers['X-URL'] = endpoint;
+    }
+    const response = await (method === 'GET'
+      ? fetch(url, { headers })
+      : fetch(url, { method, headers, body }));
+    return await response.json();
+  };
+
+  const getSignature = async (url: string, payload: {}, timestamp: number) => {
+    console.log(payload, url, timestamp);
+    const res = await reqApi(
+      'POST',
+      `${BASE_API_V1}signature`,
+      JSON.stringify(payload),
+      '',
+      url,
+      timestamp
+    );
+    return res.data.signature;
+  };
+
+  const getMethod = async () => {
+    console.log(method);
+    const result = await reqApi(
+      'GET',
+      method === 'topup' || method === 'payment'
+        ? `${BASE_API_V1}utility/method`
+        : `${BASE_API_V1}utility/bank`
+    );
+
+    setMethodData(
+      result.data.map((data: any) => {
+        return {
+          name: data.name,
+          code: data.code,
+          type: data.type,
+        };
+      })
+    );
+  };
+
+  const addPayment = async () => {
+    const today = new Date();
+    const exp = new Date();
+    exp.setDate(exp.getDate() + 1);
+    let endpoint;
+    let body: any;
+    if (method === 'payment') {
+      endpoint = `generate/${methodPayment.type}`;
+      body = {
+        expired: exp.getTime(),
+        amount: Number(amount),
+        transactionRef: `${today.getTime()}`,
+        customerName: `Test_Payment_${today.getTime()}`,
+        method: `${methodPayment.code}`,
+      };
+    } else if (method === 'topup') {
+      endpoint = `topup/${methodPayment.type}`;
+      body = {
+        expired: exp.getTime(),
+        amount: Number(amount),
+        transactionRef: `${today.getTime()}`,
+        customerName: `Test_Payment_${today.getTime()}`,
+        method: `${methodPayment.code}`,
+      };
+    } else {
+      endpoint = `transfer/${methodPayment.type}/inquiry`;
+      body = {
+        amount: Number(amount),
+        transferRef: `${today.getTime()}`,
+        channelCode: `${methodPayment.code}`,
+        accountNumber: accountNumber,
+      };
+    }
+    const url = `${BASE_API_V1}${endpoint}`;
+
+    const sig = await getSignature(`/${endpoint}`, body, today.getTime());
+
+    if (sig) {
+      const xSig = crypto
+        .createHmac('sha512', signatureKey)
+        .update(`${sig}|${clientID}`)
+        .digest('hex');
+
+      const result = await reqApi(
+        'POST',
+        url,
+        JSON.stringify(body),
+        xSig,
+        '',
+        today.getTime()
+      );
+
+      if (method === 'transfer') {
+        endpoint = `transfer/${methodPayment.type}/payment`;
+        const urlPayment = `${BASE_API_V1}${endpoint}`;
+        body.paymentRef = result.data.ref2;
+        const sigPayment = await getSignature(
+          `/${endpoint}`,
+          body,
+          today.getTime()
+        );
+
+        if (sigPayment) {
+          const xSigPayment = crypto
+            .createHmac('sha512', signatureKey)
+            .update(`${sigPayment}|${clientID}|${result.data.signature}`)
+            .digest('hex');
+
+          const resultPayment = await reqApi(
+            'POST',
+            urlPayment,
+            JSON.stringify(body),
+            xSigPayment,
+            '',
+            today.getTime()
+          );
+        }
+      } else {
+        setResult(result.data.va || result.data.qris || result.data.deeplink);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (methodPayment.name) {
+      setIsData(true);
+      setResult(null);
+    }
+  }, [methodPayment]);
+
+  useEffect(() => {
+    setUsername(clientID);
+    setPassword(secretKey);
+  }, []);
+
   return (
-    <main
-      className={`flex min-h-screen flex-col items-center justify-between p-24 ${inter.className}`}
-    >
-      <div className="z-10 w-full max-w-5xl items-center justify-between font-mono text-sm lg:flex">
-        <p className="fixed left-0 top-0 flex w-full justify-center border-b border-gray-300 bg-gradient-to-b from-zinc-200 pb-6 pt-8 backdrop-blur-2xl dark:border-neutral-800 dark:bg-zinc-800/30 dark:from-inherit lg:static lg:w-auto  lg:rounded-xl lg:border lg:bg-gray-200 lg:p-4 lg:dark:bg-zinc-800/30">
-          Get started by editing&nbsp;
-          <code className="font-mono font-bold">src/pages/index.tsx</code>
-        </p>
-        <div className="fixed bottom-0 left-0 flex h-48 w-full items-end justify-center bg-gradient-to-t from-white via-white dark:from-black dark:via-black lg:static lg:h-auto lg:w-auto lg:bg-none">
-          <a
-            className="pointer-events-none flex place-items-center gap-2 p-8 lg:pointer-events-auto lg:p-0"
-            href="https://vercel.com?utm_source=create-next-app&utm_medium=default-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            By{' '}
-            <Image
-              src="/vercel.svg"
-              alt="Vercel Logo"
-              className="dark:invert"
-              width={100}
-              height={24}
-              priority
-            />
-          </a>
+    <div className="w-full h-full p-4">
+      <h1>Niagapay Simulator</h1>
+      <div className=" gap-3 grid grid-cols-1">
+        <div className="flex flex-row items-center space-x-3">
+          <input
+            type="radio"
+            name="method"
+            id=""
+            value="payment"
+            onChange={(e) => setMethod(e.target.value)}
+          />{' '}
+          Payment
+          <input
+            type="radio"
+            name="method"
+            id=""
+            value="transfer"
+            onChange={(e) => setMethod(e.target.value)}
+          />{' '}
+          Transfer
+          <input
+            type="radio"
+            name="method"
+            id=""
+            value="topup"
+            onChange={(e) => setMethod(e.target.value)}
+          />{' '}
+          Topup
         </div>
-      </div>
-
-      <div className="relative flex place-items-center before:absolute before:h-[300px] before:w-[480px] before:-translate-x-1/2 before:rounded-full before:bg-gradient-radial before:from-white before:to-transparent before:blur-2xl before:content-[''] after:absolute after:-z-20 after:h-[180px] after:w-[240px] after:translate-x-1/3 after:bg-gradient-conic after:from-sky-200 after:via-blue-200 after:blur-2xl after:content-[''] before:dark:bg-gradient-to-br before:dark:from-transparent before:dark:to-blue-700/10 after:dark:from-sky-900 after:dark:via-[#0141ff]/40 before:lg:h-[360px]">
-        <Image
-          className="relative dark:drop-shadow-[0_0_0.3rem_#ffffff70] dark:invert"
-          src="/next.svg"
-          alt="Next.js Logo"
-          width={180}
-          height={37}
-          priority
+        <input
+          className="border p-4 rounded-md"
+          type="text"
+          value={username}
+          placeholder="Username"
+          onChange={(e) => setUsername(e.target.value)}
         />
+        <input
+          className="border p-4 rounded-md"
+          type="text"
+          value={password}
+          placeholder="password"
+          onChange={(e) => setPassword(e.target.value)}
+        />
+        <button
+          className="bg-black p-4 rounded-md text-white mb-4"
+          onClick={getMethod}
+        >
+          Authenticate
+        </button>
       </div>
 
-      <div className="mb-32 grid text-center lg:mb-0 lg:grid-cols-4 lg:text-left">
-        <a
-          href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=default-template-tw&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Docs{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Find in-depth information about Next.js features and API.
-          </p>
-        </a>
-
-        <a
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=default-template-tw&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Learn{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Learn about Next.js in an interactive course with&nbsp;quizzes!
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=default-template-tw&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Templates{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Discover and deploy boilerplate example Next.js&nbsp;projects.
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/new?utm_source=create-next-app&utm_medium=default-template-tw&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Deploy{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Instantly deploy your Next.js site to a shareable URL with Vercel.
-          </p>
-        </a>
+      <div className="w-full">
+        {methodData.length > 1 && (
+          <Listbox value={methodPayment ?? ''} onChange={setMethodPayment}>
+            <div className="relative mt-1">
+              <Listbox.Button className="relative w-full border cursor-default rounded-lg bg-white py-2 pl-3 pr-10 text-left shadow-md focus:outline-none focus-visible:border-indigo-500 focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-opacity-75 focus-visible:ring-offset-2 focus-visible:ring-offset-orange-300 sm:text-sm">
+                <span className="block truncate">{methodPayment.name}</span>
+                <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2">
+                  <ChevronUpDownIcon
+                    className="h-5 w-5 text-gray-400"
+                    aria-hidden="true"
+                  />
+                </span>
+              </Listbox.Button>
+              <Transition
+                as={Fragment}
+                leave="transition ease-in duration-100"
+                leaveFrom="opacity-100"
+                leaveTo="opacity-0"
+              >
+                <Listbox.Options className="absolute mt-1 max-h-60 w-full overflow-auto rounded-md bg-white py-1 text-base shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none sm:text-sm">
+                  {methodData.map((method: any, methodIdx) => (
+                    <Listbox.Option
+                      key={methodIdx}
+                      className={({ active }) =>
+                        `relative cursor-default select-none py-2 pl-10 pr-4 ${
+                          active
+                            ? 'bg-amber-100 text-amber-900'
+                            : 'text-gray-900'
+                        }`
+                      }
+                      value={method ?? ''}
+                    >
+                      {({ selected }) => (
+                        <>
+                          <span
+                            className={`block truncate ${
+                              selected ? 'font-medium' : 'font-normal'
+                            }`}
+                          >
+                            {`${method.name}`}
+                          </span>
+                          {selected ? (
+                            <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-amber-600">
+                              <CheckIcon
+                                className="h-5 w-5"
+                                aria-hidden="true"
+                              />
+                            </span>
+                          ) : null}
+                        </>
+                      )}
+                    </Listbox.Option>
+                  ))}
+                </Listbox.Options>
+              </Transition>
+            </div>
+          </Listbox>
+        )}
       </div>
-    </main>
-  )
+
+      {isData && (
+        <div className="grid grid-cols-1 gap-3 mt-4">
+          <input
+            className="border p-4 rounded-md"
+            type="number"
+            value={amount ?? ''}
+            placeholder="amount"
+            onChange={(e) => setAmount(e.target.value)}
+          />
+
+          {result && <div>{result}</div>}
+
+          {methodPayment.type === 'ewallet' && (
+            <input
+              className="border p-4 rounded-md"
+              type="text"
+              value={phone ?? ''}
+              placeholder="Phone"
+              onChange={(e) => setPhone(e.target.value)}
+            />
+          )}
+
+          {method === 'transfer' && (
+            <input
+              className="border p-4 rounded-md"
+              type="text"
+              value={accountNumber ?? ''}
+              placeholder="Account Number"
+              onChange={(e) => setAccountNumber(e.target.value)}
+            />
+          )}
+
+          <button onClick={addPayment}>{`Add ${method}`}</button>
+        </div>
+      )}
+    </div>
+  );
 }
